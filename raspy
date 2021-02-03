@@ -1,0 +1,158 @@
+#!/bin/bash
+
+NC='\033[0m'
+BLUE='\033[0;34m'
+LPURPLE='\033[1;35m'
+LBLUE='\033[1;34m'
+LRED='\e[91m'
+PREFIX="${LPURPLE}[${LBLUE}_${LPURPLE}]${NC}"
+EPREFIX="${LPURPLE}[${LRED}!${LPURPLE}]${NC}"
+NLINE="${LPURPLE}]${NC}\n"
+
+remote_host='arc@qpi'
+remote_root=/home/arc/raspy
+dir_cur=${PWD}
+proj_name=${dir_cur##*/}
+dir_arg=''
+script=''
+
+
+print_help() {
+    printf "Help"
+}
+
+printi() {
+    printf "${PREFIX}${LBLUE}${1}${NLINE}"
+}
+
+printe() {
+    printf "${EPREFIX}${LRED}${1}${NLINE}"
+}
+
+checksynch(){
+    rsync -zaic -e 'ssh' $dir_cur $remote_host:$remote_root'/' --dry-run
+}
+
+synch() {
+    printi "Synching files"
+
+    if ! rsync -aivz -e 'ssh' $dir_cur $remote_host:$remote_root'/' --delete --exclude env --exclude requirements.txt --progress; then
+        printe "Command failed"
+        exit 1;
+    fi
+}
+
+gen_req() {
+    printi "Generating requitements"
+
+    if ! ssh $remote_host "cd $remote_proj_root && pipreqs --savepath requirements.txt"; then
+        printe "Command failed"
+        exit 1;
+    fi
+}
+
+ins_req() {
+    printi "Installing requirements"
+
+    if ! ssh $remote_host "cd $remote_proj_root && source env/bin/activate && pip install -r requirements.txt"; then
+        printe "Command failed"
+        exit 1;
+    fi
+}
+
+del_treq(){
+    printi "Cleaning up"
+
+    if ! ssh $remote_host "cd $remote_proj_root && rm requirements.tmp"; then
+        printe "Command failed"
+        exit 1;
+    fi
+}
+
+chk_req() {
+    printi "Checking requirements"
+
+    if ! ssh $remote_host "cd $remote_proj_root && pipreqs --savepath requirements.tmp > /dev/null 2>&1 && sort -o requirements.tmp{,} && sort -o requirements.txt{,}"; then
+        printe "Command failed"
+        del_treq
+        exit 1;
+    fi
+}
+
+req_nexist() {
+    ssh $remote_host [ ! -f $remote_proj_root/requirements.txt ]; res=$?
+    return $res
+}
+
+env_nexist() {
+    ssh $remote_host [ ! -d $remote_proj_env ]; res=$?
+    return $res
+}
+
+create_venv() {
+    printi "Creating virtual enviroment"
+
+    if ! ssh $remote_host "cd $remote_proj_root && python -m venv env"; then
+        printe "Command failed"
+        exit 1;
+    fi
+}
+
+run() {
+    printi "Running script '${script}'"
+    
+    if ! ssh $remote_host "cd $remote_proj_root && source env/bin/activate && python $script"; then
+        printe "Command failed"
+        exit 1;
+    fi
+
+    printi "Script runtime"
+}
+
+while getopts 'd:s:h' flag; do
+  case "${flag}" in
+    d) dir_arg="${OPTARG}" ;;
+    s) script="${OPTARG}" ;;
+    h) print_help
+       exit 1 ;;
+  esac
+done
+
+if [ ! -z $dir_arg ]
+then
+    dir_cur=$dir_arg
+    proj_name=${dir_cur##*/}
+fi
+
+printi "Project '${proj_name}'"
+
+remote_proj_root=$remote_root/$proj_name
+remote_proj_env=$remote_root/$proj_name/env
+
+
+synch
+
+if env_nexist
+then
+    create_venv
+fi
+
+if req_nexist
+then
+    gen_req
+    ins_req
+else
+    chk_req
+    
+    if ssh $remote_host ! "diff $remote_proj_root/requirements.txt $remote_proj_root/requirements.tmp > /dev/null"
+    then
+        ins_req
+    else
+        del_treq
+    fi
+fi
+
+if [ ! -z $script ]
+then
+    time run
+fi
